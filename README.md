@@ -1,117 +1,87 @@
-# 📍 Angle‑Only Tracking — Estimating Motion from AoA (Angle of Arrival)
+# 📍 Angle‑Only Motion Estimation — Recovering Trajectory from AoA
 
-> Estimating a moving target’s **initial position** and **constant velocity** using only **angle‑of‑arrival (AoA)** measurements from a moving sensor.
+> Estimating a moving target’s **starting position** and **constant velocity** using only **angle‑of‑arrival (AoA)** bearings from a maneuvering sensor.
 
-**See the research report:** <a href="AoA_Report.pdf" target="_blank">full academic write‑up</a> (derivations, Jacobians, and solver details).  
-
----
-
-## 🎞️ Figures 
-
-<div align="center">
-  <img width="600" height="650" alt="trajectories" src="https://github.com/user-attachments/assets/3d6863e2-ddc7-4778-98dd-5933fc79985a" />
-  <br/>
-  <sub><b>Fig A — Trajectories.</b> Target moves northeast at constant speed; the sensor flies west then turns north.</sub>
-</div>
-
-
-<div align="center">
-  <img width="600" height="650" alt="angles" src="https://github.com/user-attachments/assets/0f90e844-3540-415e-918e-8640cac6c2f0" />
-  <br/>
-  <sub><b>Fig B — Angle‑of‑arrival over time.</b> Blue = true angle; orange = noisy measurements (~1° std).</sub>
-</div>
-
-
-<div align="center">
-  <img width="600" height="650" alt="convergence" src="https://github.com/user-attachments/assets/b5683b1a-ff04-47b5-95cd-7df846c53873" />
-  <br/>
-  <sub><b>Fig C — Solver convergence.</b> Estimated position/velocity settle close to truth within a few iterations.</sub>
-</div>
-
+**See the research report:** <a href="AoA_Report.pdf" target="_blank">full academic write‑up</a> (derivations, Jacobians, solver details).
 
 ---
 
-## 🚗 What problem is being solved?
+## 🚗 What problem is being solved? (quick overview)
 
-Only **bearings (angles)** to the target are available—no ranges. A single moving sensor collects these bearings once per second while it follows a known path. From the *sequence* of angles, the system recovers the target’s **starting location** and **constant velocity** in the ground plane.
+A single sensor knows **its own path** and measures only **bearings** to a target once per second. There are **no ranges**. From this time‑sequence of angles, the system recovers the target’s **initial position** $(x_0,y_0)$ and **constant velocity** $(v_x,v_y)$ in the ground plane.
 
-Why this is interesting: angles are **low‑information** by themselves. The key is that a **changing viewpoint** makes the pattern of angles depend on both where the target started and how it moves.
+**Why bearings alone can work.** Angles by themselves are low‑information, but a **changing viewpoint** (the sensor turns) imprints enough geometry in the angle history to reveal both where the target started and how it moves.
 
 ---
 
 ## 🧠 How it works (intuitive walkthrough)
 
-1. **Predict where everyone is**  
-   A constant‑velocity model says the target’s position changes linearly with time: position now = start + velocity × time. The sensor’s path is known for each timestamp.
+1. **Predict positions**  
+   Assume constant‑velocity: position now ≈ start + velocity × time. The sensor’s own position at each second is known.
 
 2. **Turn geometry into angles**  
-   For each time step, form the vector from sensor → target and compute its **bearing** with `atan2(Δy, Δx)` so the quadrant is correct.
+   For each time step, form the vector from the **sensor** to the **target**, $(\Delta x,\,\Delta y)$, and compute the bearing with `atan2(Δy, Δx)` so the result has the **correct quadrant** and lies in $(-\pi,\pi]$.  
+   *What `atan2` is doing:* it’s the “four‑quadrant arctangent.” Unlike $\arctan(\Delta y/\Delta x)$, which can’t tell left from right and breaks when $\Delta x=0$, `atan2` uses the **signs of both inputs** to pick the right direction and handles vertical lines cleanly. The order is `(y, x)` by convention.
 
 3. **Compare to measurements**  
-   Subtract the predicted angle from the measured one to get an **angle error** (wrapped to $(-\pi,\pi]$ so differences near $\pi$ don’t jump).
+   Subtract the predicted angle from the measured angle to get the **bearing residual**, then **wrap** it back into $(-\pi,\pi]$ so a small physical error near $\pm\pi$ isn’t mistaken for a $2\pi$ jump.
 
-4. **Nudge the guess to reduce error**  
-   A standard **Gauss–Newton** routine tweaks the four unknowns — start $(x_0,y_0)$ and velocity $(v_x,v_y)$ — to make all angle errors small at once. The report shows the derivatives that tell the solver *which way to move* each parameter.
+4. **Adjust the guess**  
+   A **Gauss–Newton** routine nudges $(x_0,y_0,v_x,v_y)$ to reduce all residuals at once. Intuitively, it asks “which tiny change in the four numbers would make the bearings line up better?” and repeats until the change is negligible.
 
-5. **Stop when stable**  
-   When the total error stops dropping (or changes are tiny), the parameters are taken as the estimate. Fig C shows a typical convergence trace.
-
----
-
-## 🧪 Scenario behind the figures (typical test)
-
-- **Target (truth):** starts at $(0,0)$ and moves northeast at a constant speed (e.g., 30 m/s).  
-- **Sensor (known path):** starts to the east; flies **west** for a while, then turns **north** at the same speed (e.g., 35 m/s).  
-- **Sampling:** one angle per second for ~30 s with **1° Gaussian noise**.
-
-This turn in the sensor path is crucial: without some **cross‑range** motion, the problem is poorly constrained.
+5. **Why a turn matters**  
+   If the sensor flies straight with constant speed, many different target states can produce almost the same angle history. A **turn (cross‑range motion)** makes the angles curve in a way that uniquely fingerprints the target’s position and velocity.
 
 ---
 
-## 🧩 Practical design choices
+## 🧪 Scenario used for the figures
 
-- **Initialization.** Start with a rough guess (e.g., target near the first line of sight, modest speed). The solver will refine it.  
-- **Angle wrapping.** Always wrap differences to $(-\pi,\pi]$ to avoid spurious $2\pi$ jumps.  
-- **Outlier handling.** If a few angles look inconsistent (glints, mis‑detections), cap their influence or drop them.  
-- **Units.** Keep everything in **radians** internally; display in degrees if desired.  
-- **Termination.** Stop when the error reduction per iteration is tiny or a max‑iteration cap is hit.
+- **Target (truth):** starts at $(0,0)$ and moves northeast at constant speed (e.g., 30 m/s).  
+- **Sensor (known path):** starts east of the target; flies **west** for a while, then turns **north** at the same speed (e.g., 35 m/s).  
+- **Sampling:** one bearing per second for ~30 s with **1° Gaussian noise**.
 
-For full equations and Jacobians, see the <a href="Report.pdf" target="_blank">research report</a>.
+This geometry supplies the needed **viewpoint change** to make the parameters observable.
 
 ---
 
-## 📖 Reading the plots
+## 🎞️ Results (figures)
 
-- **Fig A (Trajectories).** A turning observer creates geometry that disambiguates both position and velocity. Straight‑line observers give far weaker angle patterns.  
-- **Fig B (Angles).** The smooth blue curve is the angle that would be seen with perfect measurements; orange points show the noisy angles fed to the solver.  
-- **Fig C (Convergence).** Each line tracks an estimated parameter moving toward its true value; flat lines mean the solution has stabilized.
+<div align="center">
+  <img width="600" height="650" alt="trajectories" src="https://github.com/user-attachments/assets/3d6863e2-ddc7-4778-98dd-5933fc79985a" />
+  <br/>
+  <sub><b>Fig A — Trajectories.</b> The turning sensor provides cross‑range motion that disambiguates position and velocity.</sub>
+</div>
 
----
+<div align="center">
+  <img width="600" height="650" alt="angles" src="https://github.com/user-attachments/assets/0f90e844-3540-415e-918e-8640cac6c2f0" />
+  <br/>
+  <sub><b>Fig B — Bearings over time.</b> Blue = true angle; orange = noisy measurements (~1° std). The curvature comes from the sensor’s turn.</sub>
+</div>
 
-## ⚠️ Limitations & edge cases
-
-- **No range information.** Bearings alone cannot fix absolute scale from a stationary observer. **Observer maneuvers** (turns, speed changes) are needed.  
-- **Near‑singular passes.** If the target passes very close to the sensor, small bearing noise can cause large errors.  
-- **Model mismatch.** The method assumes **constant velocity** during the window; strong target maneuvers break that assumption.  
-- **Initialization sensitivity.** Extremely bad initial guesses can stall the solver; a few random restarts help on tough cases.
-
----
-
-## 🗂️ What’s in the repo (typical)
-
-- `README.md` — this document.  
-- `Report.pdf` — the full academic write‑up (rename your file or update the link).  
-- `figs/` — three images for Fig A/B/C (use your own links above if storing elsewhere).  
-- `scripts/` — optional notebook/script that generates the figures from the scenario.
+<div align="center">
+  <img width="600" height="650" alt="convergence" src="https://github.com/user-attachments/assets/b5683b1a-ff04-47b5-95cd-7df846c53873" />
+  <br/>
+  <sub><b>Fig C — Solver convergence.</b> The four parameters settle close to their true values after a few Gauss–Newton iterations.</sub>
+</div>
 
 ---
 
-## 🧠 Glossary (one‑liners)
+## 🧩 Practical guidance
 
-**AoA / Bearing** — Angle from the sensor to the target in the ground plane.  
-**Constant‑velocity model** — Position evolves linearly with time; velocity is fixed.  
-**Gauss–Newton** — Solver that adjusts parameters to minimize total squared error.  
-**Angle wrapping** — Converting any angle to a principal interval like $(-\pi,\pi]$ to avoid jumps.
+- **Initialization.** Start with a plausible guess: target near the first line‑of‑sight, modest speed. Random restarts help if convergence stalls.  
+- **Angle wrapping.** Always wrap residuals to $(-\pi,\pi]$ to avoid artificial $2\pi$ jumps.  
+- **Units.** Keep calculations in **radians**; convert to degrees only for display.  
+- **Outliers.** Cap the influence of obvious mis‑detections (heavy‑tailed loss or simple clipping).  
+- **When it struggles.** Very close passes or nearly straight sensor paths reduce information; a deliberate **S‑ or L‑turn** helps.
+
+---
+
+## 🗣️ Glossary (quick)
+
+**AoA / Bearing** — The direction from sensor to target in the plane, returned by `atan2(Δy,Δx)` in $(-\pi,\pi]$.  
+**Angle wrapping** — Mapping any angle back into a principal interval like $(-\pi,\pi]$.  
+**Constant‑velocity model** — Position evolves linearly with time; velocity is fixed over the window.  
+**Gauss–Newton** — An iterative least‑squares method that adjusts parameters to shrink the sum of squared residuals.
 
 ---
 
