@@ -1,5 +1,4 @@
-% EE 4CL4 Project - 
-% Estimating Mobile User Motion Using Angle-Only Measurements
+
 
 % Clear workspace and figures
 close all; clc;
