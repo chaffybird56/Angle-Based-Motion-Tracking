@@ -109,6 +109,3 @@ Now that the workflow is clear, the three outputs below illustrate the run on th
 ## License
 
 MIT — see `LICENSE`.
-
-
-MIT — see `LICENSE`.
